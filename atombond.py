@@ -241,3 +241,165 @@ def calc_coor_num(rho,r_dat_a,g_dat_a,debug=False,Ngrid=1001,rcut=1.5):
         debug_d['g_a'] = g_a
         return cn, debug_d
 
+def calc_rcut_global(pdf_a,sampdist_a):
+
+    ind_max = np.argmax(pdf_a)
+    ind_min= np.argmin(pdf_a[ind_max:]) + ind_max
+    rcut = sampdist_a[ind_min]
+
+    return rcut
+
+def calc_rcut_local(pdf_a,sampdist_a):
+
+    ind_max = np.argmax(pdf_a)
+    pdf_diff_a = np.diff(pdf_a[ind_max:])
+    ind_min= np.where(pdf_diff_a> 0)[0][0] + ind_max
+
+
+    #ind_min= np.argmin(pdf_a[ind_max:]) + ind_max
+    rcut = sampdist_a[ind_min]
+
+    return rcut
+
+def coor_cutoff(dists_a,rcut=1.5):
+    assert dists_a.ndim==1, 'dists_a must be a 1 dimensional array'
+
+    # inputs distances and returns coordination number
+    w_a = dists_a <= rcut
+    coornum = np.sum(w_a)
+    return coornum
+
+def coor_econ(dists_a,TOL=1e-5,dosort=True,nexp=6):
+    # assert len(dists_a.shape)
+    assert dists_a.ndim==1, 'dists_a must be a 1 dimensional array'
+
+
+    if dosort:
+        dists_a = np.sort(dists_a)
+
+    if dists_a[0]==0:
+        dists_a = dists_a[1:]
+
+    dnnavg = dists_a[0]
+
+    # loops until distances stop changing
+    while True:
+        w_a = np.exp(1 - (dists_a / dnnavg)**nexp)
+        dnnavg_next = np.sum(w_a * dists_a) / np.sum(w_a)
+        if np.abs(dnnavg_next/dnnavg-1) < TOL:
+            break
+        dnnavg = dnnavg_next
+
+    coornum = np.sum(w_a)
+    return coornum
+
+def coor_sann(idists_a):
+    assert idists_a.ndim==1, 'dists_a must be a 1 dimensional array'
+
+    N = idists_a.shape[0]
+    rad1=idists_a[0]
+    Nbond = 3
+    # Nbond bc we want the 3rd index to be the 4th atom(the 1st atom that's not bonded)
+    rnonbond = idists_a[Nbond]
+    # sum over Nbond neighbors
+    rshell = np.sum(idists_a[:Nbond]/(Nbond-2))
+    while rshell > rnonbond:
+        Nbond += 1
+        rshell = np.sum(idists_a[:Nbond]/(Nbond-2))
+        rnonbond = idists_a[Nbond]
+
+
+    w_a = (1-idists_a[:Nbond]/rshell)/(1-rad1/rshell)
+    coornum = np.sum(w_a)
+    return coornum
+
+def local_kernel(x_a):
+    q_a = np.abs(x_a)
+    kernel_a = np.zeros(q_a.shape)
+    ind_outer = np.where(np.abs(q_a)<=2)
+    kernel_a[ind_outer] = 1/6*(2-q_a[ind_outer])**3
+
+    ind_inner = np.where(np.abs(q_a)<=1)
+    kernel_a[ind_inner] = 1/6*( (2-q_a[ind_inner])**3 - 4*(1-q_a[ind_inner])**3 )
+
+    return kernel_a
+
+def approx_pdf_kde(iatom, dists_a,rhobar,bandwidth=0.25):
+    Nx = 5
+    liq_at = get_lj_fcc_struc(super_a=[Nx,Nx,Nx],dNN=1.2,E_lj=1/40)
+
+
+    Nat = liq_at.get_number_of_atoms()
+    Vat = liq_at.get_volume()
+    Lat = (Vat)**(1/3)
+    rhoat = Nat/Vat
+
+    if dists_a[0] == 0:
+        dists_a = dists_a[1:]
+    #FIX
+    Nsamp = 1001
+    pdf_approx_a = np.zeros(Nsamp)
+    sampdist_a = np.linspace(0.001, Lat/2, Nsamp)
+    for ind in np.arange(dists_a.size):
+        #calculates the observed number of atoms per angstrom
+        #if integrated, coordination number is given
+        # dn_dr_a = (1/np.sqrt(2*np.pi)/bandwidth)*np.exp((-1/2)*(dists_a[ind]-sampdist_a)**2/(bandwidth**2))
+        dn_dr_a = local_kernel( (dists_a[ind]-sampdist_a)/bandwidth )/ bandwidth
+        assert dn_dr_a[0] == 0, 'bandwidth is too large for the closest neighboring atom'
+        g_a = dn_dr_a/(4*np.pi*sampdist_a**2*rhobar)
+        #print(g_a)
+
+        # print(dn_dr_a[:20])
+        pdf_approx_a += g_a
+
+    return pdf_approx_a, sampdist_a
+
+def approx_pdf_kde_adapt(iatom, dists_a,rhobar,num_neighbor=4,bandwidth_fac=1):
+    Nx = 5
+    liq_at = get_lj_fcc_struc(super_a=[Nx,Nx,Nx],dNN=1.2,E_lj=1/40)
+
+
+    Nat = liq_at.get_number_of_atoms()
+    Vat = liq_at.get_volume()
+    Lat = (Vat)**(1/3)
+    rhoat = Nat/Vat
+
+    if dists_a[0] == 0:
+        dists_a = dists_a[1:]
+    #FIX
+    #bandwidth_a = np.array(idists_a.size)
+    dist_diff_a = np.diff(dists_a)
+    w_a=np.ones(num_neighbor-1)/(num_neighbor-1)
+    avg_bandwidth_a=np.convolve(dist_diff_a,w_a, mode='valid')
+    front_bandwidth_a=avg_bandwidth_a[0]*np.ones(num_neighbor/2)
+    back_bandwidth_a =avg_bandwidth_a[-1]*np.ones(num_neighbor/2)
+    bandwidth_a=bandwidth_fac*np.hstack((front_bandwidth_a,avg_bandwidth_a,back_bandwidth_a))*(dists_a/dists_a[0])**2
+    print(bandwidth_a.shape)
+    print(avg_bandwidth_a.shape)
+    print(dists_a.shape)
+    #print(bandwidth_a)
+
+    dist_cutoff = Lat/2
+    Nsamp = 1001
+    pdf_approx_a = np.zeros(Nsamp)
+    dn_dr_tot_a = np.zeros(Nsamp)
+    sampdist_a = np.linspace(0.001, .8*dist_cutoff, Nsamp)
+
+    #for ind in np.arange(np.round(idists_a.size*.8)):
+    for ind in np.arange(idists_a.size):
+        #calculates the observed number of atoms per angstrom
+        #if integrated, coordination number is given
+        ##dn_dr_a = (1/np.sqrt(2*np.pi)/bandwidth)*np.exp((-1/2)*(dists_a[ind]-sampdist_a)**2/(bandwidth**2))
+        if dists_a[ind] > dist_cutoff:
+            break
+        ibandwidth= bandwidth_a[ind]
+        dn_dr_a = local_kernel( (dists_a[ind]-sampdist_a)/ibandwidth )/ ibandwidth
+        g_a = dn_dr_a/(4*np.pi*sampdist_a**2*rhobar)
+        #print(g_a)
+
+        # print(dn_dr_a[:20])
+        pdf_approx_a += g_a
+        dn_dr_tot_a +=dn_dr_a
+
+    return pdf_approx_a, sampdist_a,dn_dr_tot_a
+
