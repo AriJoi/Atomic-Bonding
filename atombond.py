@@ -402,4 +402,3 @@ def approx_pdf_kde_adapt(iatom, dists_a,rhobar,num_neighbor=4,bandwidth_fac=1):
         dn_dr_tot_a +=dn_dr_a
 
     return pdf_approx_a, sampdist_a,dn_dr_tot_a
-
